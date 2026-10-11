@@ -92,6 +92,9 @@ async def test_real_ocr_to_validated_archive_without_processor(tmp_path):
 @pytest.mark.asyncio
 async def test_completed_pages_resume_after_provider_failure(tmp_path, monkeypatch):
     source, output, request = fixture(tmp_path)
+    # OCR is replaced below, so this test must not depend on a Tesseract
+    # binary being installed on the machine that runs it.
+    monkeypatch.setattr(local, "local_requirements", lambda target=None: None)
     monkeypatch.setattr(
         local,
         "ocr",

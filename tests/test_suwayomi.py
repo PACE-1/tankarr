@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from tankarr.config import Settings
 from tankarr.providers import build_providers
+from tankarr.providers import suwayomi as suwayomi_provider
 from tankarr.providers.base import ProviderRequestError, ProviderUnavailableError
 from tankarr.providers.suwayomi import SuwayomiProvider
 
@@ -146,6 +147,17 @@ def graphql_response(request: Request) -> Response:
             },
         )
     raise AssertionError(f"Unexpected GraphQL operation: {query}")
+
+
+@pytest.fixture(autouse=True)
+def steady_host(monkeypatch):
+    """Download concurrency adapts to the memory pressure of the host.
+
+    The page tests expect pages to be fetched in parallel, so they must not
+    read the real cgroup and memory state of the machine running them.
+    """
+
+    monkeypatch.setattr(suwayomi_provider, "local_download_pressure", lambda: {})
 
 
 def provider() -> SuwayomiProvider:
