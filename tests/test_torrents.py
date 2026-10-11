@@ -81,7 +81,8 @@ def test_torrent_info_hash_uses_exact_bencoded_info_dictionary():
 
 def test_release_numbering_does_not_treat_c2c_as_chapter_two():
     assert release_number_hints("Series v01-02 (c2c)") == ("1-2", None)
-    assert infer_numbered_name("Series v01-02 (c2c)") == ("Series (c2c)", "1-2", None)
+    # The trailing "(c2c)" is a release tag, so it is not part of the series name.
+    assert infer_numbered_name("Series v01-02 (c2c)") == ("Series", "1-2", None)
 
 
 def test_torrent_api_does_not_expose_server_side_download_reference(tmp_path: Path):
