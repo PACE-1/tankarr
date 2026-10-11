@@ -69,6 +69,9 @@ VOLUME_DIR_PATTERN = re.compile(
     r"^v(?:ol(?:ume)?)?\.?\s*(?P<number>\d+(?:\.\d+)?)$", re.IGNORECASE
 )
 AUTHOR_TITLE_PATTERN = re.compile(r"^(?P<author>.{2,60}?)\s+-\s+(?P<title>.{2,})$")
+# Scene-style release tags at the end of a file name: "(2021) (Digital) (1r0n) (f2)",
+# "[#EverydayHeroes Scans]". They describe the release, not the series.
+RELEASE_TAG_TAIL_PATTERN = re.compile(r"(?:\s*[(\[][^()\[\]]*[)\]])+\s*$")
 FLEXIBLE_VOLUME_PATTERN = re.compile(
     r"(?i)(?:^|[\s._\-[(])(?:v|vol(?:ume)?)\.?\s*0*(?P<start>\d+(?:\.\d+)?)"
     r"(?:\s*[-–]\s*(?:v|vol(?:ume)?)?\.?\s*0*(?P<end>\d+(?:\.\d+)?))?"
@@ -300,12 +303,20 @@ def _normalized_volume_number(value: str) -> str:
 def infer_numbered_name(stem: str) -> tuple[str, str | None, str | None]:
     """Extract one explicit chapter/volume token without guessing from a year."""
 
+    # "Series v01 (2021) (Digital) (group)" and "Series v02 (2022) (Digital)
+    # (group)" are one series: drop the trailing release tags first, so the
+    # year and the group do not end up in the series name.
+    stem = RELEASE_TAG_TAIL_PATTERN.sub("", stem).strip() or stem
     chapter_match = FLEXIBLE_CHAPTER_PATTERN.search(stem)
     volume_match = FLEXIBLE_VOLUME_PATTERN.search(stem)
     selected = chapter_match or volume_match
     if selected is None:
         legacy = SERIES_NUMBER_PATTERN.match(stem.strip())
         if legacy is None:
+            return stem.strip(), None, None
+        separator = stem.strip()[legacy.end("base") : legacy.start("number")]
+        if separator == "-" and legacy.group("base")[-1:].isdigit():
+            # "Series 1-6" is six volumes in one file, not volume 6.
             return stem.strip(), None, None
         return (
             legacy.group("base").strip(),
@@ -319,10 +330,13 @@ def infer_numbered_name(stem: str) -> tuple[str, str | None, str | None]:
     raw_end = selected.group("end")
     number = f"{start}-{normalize(raw_end)}" if raw_end else start
     base = f"{stem[: selected.start()]} {stem[selected.end() :]}"
-    base = re.sub(r"\s+", " ", base).strip(" ._-") or stem.strip()
+    if selected is chapter_match:
+        # "v1 c001": the volume token next to a chapter is not the series name.
+        base = FLEXIBLE_VOLUME_PATTERN.sub(" ", base)
+    base = re.sub(r"\s+", " ", base).strip(" ._-")
     if selected is chapter_match:
         return base, None, number
-    return base, number, None
+    return base or stem.strip(), number, None
 
 
 def _zip_image_count(path: Path) -> int:
@@ -772,6 +786,14 @@ class LibraryImporter:
     def _archive_item(path: Path, relative: str, images: int) -> dict[str, Any]:
         stem = path.stem.strip()
         series_hint, volume, chapter = infer_numbered_name(stem)
+        parent = Path(relative).parent
+        if not series_hint and parent != Path("."):
+            # "Series/v1 c001 [group].cbz": the folder carries the series name.
+            series_hint = parent.name
+        elif not series_hint:
+            series_hint = stem
+        tagless = RELEASE_TAG_TAIL_PATTERN.sub("", stem).strip() or stem
+        explicit_volume = FLEXIBLE_VOLUME_PATTERN.search(tagless) is not None
         return {
             "path": relative,
             "kind": "archive",
@@ -781,7 +803,27 @@ class LibraryImporter:
             "volume": volume,
             "chapter": chapter,
             "chapter_title": "",
+            # Internal hints for _group_items; removed there.
+            "explicit_volume": explicit_volume and chapter is None,
+            "bare_number": volume is not None and not explicit_volume,
         }
+
+    @staticmethod
+    def _bare_numbers_to_chapters(members: list[dict[str, Any]]) -> None:
+        """Read a bare number next to explicit volumes as a chapter.
+
+        A release pack mixes collected volumes ("v20") with newer loose
+        chapters ("187"). Next to explicit volumes, a bare number is a chapter,
+        not volume 187. The scan hints are consumed here.
+        """
+
+        if any(item.get("explicit_volume") for item in members):
+            for item in members:
+                if item.get("bare_number"):
+                    item["chapter"], item["volume"] = item["volume"], None
+        for item in members:
+            item.pop("bare_number", None)
+            item.pop("explicit_volume", None)
 
     @staticmethod
     def _group_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -803,6 +845,7 @@ class LibraryImporter:
         for key, members in grouped.items():
             members.sort(key=lambda item: natural_key(item["path"]))
             authors, title = split_author_title(members[0]["series_hint"])
+            LibraryImporter._bare_numbers_to_chapters(members)
             if (
                 len(members) == 1
                 and members[0]["volume"] is None
@@ -1395,6 +1438,15 @@ class LibraryImporter:
             raise TorrentImportAmbiguous(detail)
         if len(items) > 500:
             raise TorrentImportAmbiguous("Torrent contains more than 500 comic books")
+        # The same pack rule as the library scan: a release that mixes "v01"
+        # volumes with bare-numbered chapters ("Series 148 (2024) (Digital)")
+        # holds chapters, not volume 148.
+        packs: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for item in items:
+            key = (str(Path(str(item["path"])).parent), str(item.get("series_hint")))
+            packs.setdefault(key, []).append(item)
+        for members in packs.values():
+            self._bare_numbers_to_chapters(members)
         return {"root": root, "items": items, "skipped": skipped}
 
     async def import_existing_series_archive(
