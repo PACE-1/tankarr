@@ -2210,10 +2210,39 @@ class Database:
                 canonical_chapter = chapter.get(
                     "canonical_chapter", chapter.get("chapter")
                 )
+                # The unit the provider classified the release as. A whole
+                # book (a "Volume 3" entry) used to fall back to the column
+                # default and be stored as a chapter without a number, so
+                # Wanted picked it for a volume slot and create_job refused
+                # it until the next restart repaired the row.
+                release_unit = str(
+                    chapter.get("release_unit")
+                    or (
+                        "volume"
+                        if chapter.get("volume")
+                        and not chapter.get("chapter")
+                        and not source_chapter
+                        else "chapter"
+                    )
+                )
                 numbering_status = str(
                     chapter.get("numbering_status")
                     or ("mapped" if canonical_chapter is not None else "unmapped")
                 )
+                numbering_method = str(
+                    chapter.get("numbering_method") or "source_identity"
+                )
+                numbering_confidence = float(chapter.get("numbering_confidence") or 0.0)
+                if release_unit == "volume" and not chapter.get("numbering_status"):
+                    # A book is identified by its volume, as the start-up
+                    # repair of the same rows records it.
+                    numbering_status = "mapped"
+                    numbering_method = str(
+                        chapter.get("numbering_method") or "volume_identity"
+                    )
+                    numbering_confidence = float(
+                        chapter.get("numbering_confidence") or 1.0
+                    )
                 compatibility_chapter = (
                     canonical_chapter if numbering_status == "mapped" else None
                 )
@@ -2225,9 +2254,16 @@ class Database:
                         numbering_confidence, numbering_evidence_json,
                         numbering_version, title, language, provider,
                         groups_json, publish_at, source_url, pages, version,
-                        monitored, first_seen_at, updated_at, source_key, source_name
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        monitored, first_seen_at, updated_at, source_key, source_name,
+                        release_unit
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
+                        -- A release can be upgraded to a book, never
+                        -- downgraded: reclassifications from the book map
+                        -- and from page counts are kept.
+                        release_unit=CASE
+                            WHEN chapter_release.release_unit='volume' THEN 'volume'
+                            ELSE excluded.release_unit END,
                         -- A release reclassified as a whole volume keeps that
                         -- unit: the provider's "chapter" number is its volume.
                         -- A source that names no volume does not erase the
@@ -2276,8 +2312,8 @@ class Database:
                         source_chapter,
                         canonical_chapter,
                         numbering_status,
-                        str(chapter.get("numbering_method") or "source_identity"),
-                        float(chapter.get("numbering_confidence") or 0.0),
+                        numbering_method,
+                        numbering_confidence,
                         json.dumps(
                             chapter.get("numbering_evidence") or {},
                             ensure_ascii=False,
@@ -2296,6 +2332,7 @@ class Database:
                         now,
                         chapter.get("source_key") or chapter["provider"],
                         chapter.get("source_name"),
+                        release_unit,
                     ),
                 )
             self._reconcile_numbering_connection(connection, manga_id)
