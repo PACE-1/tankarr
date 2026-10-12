@@ -849,7 +849,25 @@ async def test_transient_infrastructure_failure_does_not_condemn_the_release(
 
 
 @pytest.mark.asyncio
-async def test_transient_download_attempts_advance_and_eventually_fail(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("error", "prefix"),
+    [
+        (
+            ProviderUnavailableError("source engine is offline"),
+            "ProviderUnavailableError:",
+        ),
+        # A source that timed out while its runtime is healthy: not a bad release.
+        (
+            ProviderRequestError(
+                "Suwayomi source failed while fetching page 66", transient=True
+            ),
+            "ProviderRequestError:",
+        ),
+    ],
+)
+async def test_transient_download_attempts_advance_and_eventually_fail(
+    tmp_path: Path, error: Exception, prefix: str
+):
     database = Database(tmp_path / "tankarr.sqlite3")
     database.initialize()
     seed_manga(database)
@@ -865,7 +883,7 @@ async def test_transient_download_attempts_advance_and_eventually_fail(tmp_path:
         name = "mangadex"
 
         async def download_pages(self, *_args, **_kwargs):
-            raise ProviderUnavailableError("source engine is offline")
+            raise error
 
     service = TankarrService(
         settings,
@@ -892,7 +910,7 @@ async def test_transient_download_attempts_advance_and_eventually_fail(tmp_path:
     await service.process_download_job(job["id"])
     terminal = database.get_job(job["id"])
     assert terminal["status"] == "failed"
-    assert terminal["message"].startswith("ProviderUnavailableError:")
+    assert terminal["message"].startswith(prefix)
 
 
 @pytest.mark.asyncio
