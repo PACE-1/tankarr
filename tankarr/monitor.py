@@ -1088,6 +1088,13 @@ class ReleaseMonitor:
         if entry.get("no_sources"):
             return await self._recover_series_without_sources(manga_id)
         rows = list(entry.get("chapters") or [])
+        # The Wanted snapshot predates queue_missing. A configured provider
+        # is not proof that acquisition succeeded: check the resulting jobs.
+        queued_slots = {
+            slot_key_for(release)
+            for release in self.database.preferred_missing_releases(manga_id)
+            if release.get("queue_status")
+        }
         grabbed = 0
         searched = 0
         chapter_slots: list[dict[str, Any]] = []
@@ -1137,15 +1144,21 @@ class ReleaseMonitor:
                     elif row.get("volume"):
                         book_slots.append(row)
                     continue
-                # A real release the sources carry: ``queue_missing`` has just
-                # created its job, so the source rung answered by acting.
+                queued = slot_key in queued_slots
                 self.database.record_wanted_attempt(
                     manga_id,
                     slot_key,
                     channel=CHANNEL_SOURCES,
-                    outcome=QUEUED,
-                    detail=str(row.get("source_name") or row.get("provider") or ""),
+                    outcome=QUEUED if queued else UNAVAILABLE,
+                    detail=str(row.get("source_name") or row.get("provider") or "")
+                    if queued
+                    else "source release could not be queued",
                 )
+                if not queued:
+                    if row.get("chapter"):
+                        chapter_slots.append(row)
+                    elif row.get("volume"):
+                        book_slots.append(row)
                 continue
             self.database.record_wanted_attempt(
                 manga_id,

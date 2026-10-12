@@ -1233,3 +1233,35 @@ async def test_a_failed_cycle_does_not_end_the_monitor(tmp_path: Path):
         await monitor.stop()
     assert len(cycles) >= 3
     assert monitor.last_cycle_error == "RuntimeError: Library organization is blocked"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("queued", [False, True])
+async def test_source_recovery_records_queued_only_when_a_job_exists(
+    tmp_path: Path, queued: bool
+):
+    database = Database(tmp_path / "tankarr.sqlite3")
+    database.initialize()
+    seed_orphan(database)
+    database.upsert_chapters("orphan", [chapter("source-chapter", "1")])
+    service = FakeService(database, [])
+    monitor = ReleaseMonitor(
+        Settings(data_dir=tmp_path / "data", library_dir=tmp_path / "library"),
+        database,
+        service,  # type: ignore[arg-type]
+        RecordingWorker(),  # type: ignore[arg-type]
+    )
+    # Wanted was captured before queue_missing attempted acquisition.
+    entry = service.list_wanted()[0]
+    if queued:
+        await monitor.queue_missing("orphan")
+
+    await monitor.recover_wanted_slots(entry)
+
+    sources = next(
+        item
+        for item in database.wanted_attempts("orphan")["chapter:1"]
+        if item["channel"] == "sources"
+    )
+    assert sources["outcome"] == ("queued" if queued else "unavailable")
+    assert bool(database.list_jobs()) is queued
