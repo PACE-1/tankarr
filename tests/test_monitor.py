@@ -1265,3 +1265,67 @@ async def test_source_recovery_records_queued_only_when_a_job_exists(
     )
     assert sources["outcome"] == ("queued" if queued else "unavailable")
     assert bool(database.list_jobs()) is queued
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("still_active", [False, True])
+async def test_source_recovery_rechecks_a_previously_queued_slot(
+    tmp_path, still_active
+):
+    database = Database(tmp_path / "tankarr.sqlite3")
+    database.initialize()
+    seed_orphan(database)
+    database.upsert_chapters("orphan", [chapter("source-chapter", "1")])
+    service = FakeService(database, [])
+    monitor = ReleaseMonitor(
+        Settings(data_dir=tmp_path / "data", library_dir=tmp_path / "library"),
+        database,
+        service,
+        RecordingWorker(),
+    )
+    await monitor.queue_missing("orphan")
+    entry = service.list_wanted()[0]
+    job = database.list_jobs()[0]
+    database.update_job(job["id"], status="downloading" if still_active else "failed")
+
+    await monitor.recover_wanted_slots(entry)
+
+    attempts = {
+        item["channel"]: item
+        for item in database.wanted_attempts("orphan")["chapter:1"]
+    }
+    assert attempts["sources"]["outcome"] == (
+        "pending" if still_active else "unavailable"
+    )
+    if still_active:
+        assert attempts["sources"]["detail"] == "already downloading"
+        assert "indexer_chapter" not in attempts
+    else:
+        assert attempts["indexer_chapter"]["outcome"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_source_recovery_recognizes_a_job_for_an_expected_slot(tmp_path):
+    database = Database(tmp_path / "tankarr.sqlite3")
+    database.initialize()
+    seed_orphan(database)
+    service = FakeService(database, [])
+    monitor = ReleaseMonitor(
+        Settings(data_dir=tmp_path / "data", library_dir=tmp_path / "library"),
+        database,
+        service,
+        RecordingWorker(),
+    )
+    entry = {
+        "manga": database.get_manga("orphan"),
+        "chapters": [{"id": "expected-1", "chapter": "1", "provider": "expected"}],
+    }
+    database.upsert_chapters("orphan", [chapter("source-chapter", "1")])
+    await monitor.queue_missing("orphan")
+
+    await monitor.recover_wanted_slots(entry)
+
+    attempts = database.wanted_attempts("orphan")["chapter:1"]
+    assert len(attempts) == 1
+    assert attempts[0]["channel"] == "sources"
+    assert attempts[0]["outcome"] == "queued"
