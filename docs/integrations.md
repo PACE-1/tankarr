@@ -253,6 +253,24 @@ kept for the recycle-bin retention period. See
 and [Download clients](installation.md#download-clients) for a complete
 example.
 
+### Numbering in mixed packs
+
+Tankarr preserves explicit volume and chapter markers, including `(v02)` and
+`[c001]`, when removing trailing release tags such as `(2024) (Digital) [group]`.
+For files with a bare number, a matching release title or containing folder such
+as `Series v01-17 + c148-224` (also `Series v01-17 + 148-224`) identifies the
+volume and chapter ranges. Preview and import use the same rules.
+
+A bare number beside explicitly numbered books is left unassigned when that
+context is missing, conflicting or does not cover the number. Assign its volume
+or chapter in the file picker. Packs containing only bare numbers retain their
+volume numbering. An archive named `Series 1 – 6` remains unassigned: split it
+into individual books or deliberately assign it as an omnibus.
+
+Library scans use the same folder hints and separate volumes and chapters into
+import groups for the same series. Unassigned files require a number before
+the import can start; their position in the list is not a book number.
+
 ### After import
 
 | **After import** | What happens to the torrent |
