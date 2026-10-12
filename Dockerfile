@@ -1,6 +1,6 @@
 # The frontend bundle is platform independent: build it once on the build
 # host, even when the image targets another architecture.
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS frontend
+FROM --platform=$BUILDPLATFORM node:25-bookworm-slim AS frontend
 WORKDIR /src/frontend
 COPY frontend/package*.json ./
 RUN npm ci --no-audit --no-fund
@@ -12,7 +12,7 @@ RUN npm run build \
 # JRE for the managed Suwayomi-Server JAR.
 FROM eclipse-temurin:25-jre-jammy AS java-runtime
 
-FROM python:3.13-slim-bookworm AS runtime
+FROM python:3.14-slim-bookworm AS runtime
 # PYTHONSAFEPATH: helper processes started with `python -m tankarr.…` import
 # the installed package, never code from the working directory.
 ENV PYTHONDONTWRITEBYTECODE=1 \
