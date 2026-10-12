@@ -1107,7 +1107,9 @@ class TorrentManager:
         if not content:
             raise FileNotFoundError("This release has no completed content yet")
         scan = await asyncio.to_thread(
-            self.importer.scan_torrent_content, Path(content)
+            self.importer.scan_torrent_content,
+            Path(content),
+            release_title=str(job.get("title") or ""),
         )
         language = str(job["language"])
         owned = {
