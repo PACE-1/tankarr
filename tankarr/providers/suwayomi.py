@@ -695,9 +695,14 @@ class SuwayomiProvider(Provider):
                 status_code = getattr(exc, "status_code", None)
                 self.page_concurrency.observe_failure(status_code)
                 if await self._runtime_responding():
+                    # Suwayomi is up, so this is the source: still not a bad
+                    # release. A request only becomes unavailable here after
+                    # its transport retries or a retryable status, so the job
+                    # is paused and retried rather than failed for good.
                     raise ProviderRequestError(
                         f"Suwayomi source failed while fetching page {index + 1}",
                         status_code=status_code,
+                        transient=True,
                     ) from exc
                 raise
             except (ProviderRequestError, httpx.HTTPError) as exc:

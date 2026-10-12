@@ -92,6 +92,7 @@ from tankarr.providers.base import (
     ProviderUnavailableError,
 )
 from tankarr.read_model_cache import cache_now, next_publication
+from tankarr.redaction import redact_secrets
 from tankarr.series_summary import publication_summary
 from tankarr.series_unit import normalize_series_unit, resolve_series_unit
 from tankarr.source_circuit import source_gate_key
@@ -8691,6 +8692,7 @@ class TankarrService:
                     message="Paused for deletion recovery",
                 )
         except Exception as exc:  # noqa: BLE001 - persist every worker failure
+            failure_detail = redact_secrets(f"{type(exc).__name__}: {exc}")
             if isinstance(
                 exc, (ProviderUnavailableError, ProviderRequestError, httpx.HTTPError)
             ):
@@ -8723,12 +8725,12 @@ class TankarrService:
                             status="queued",
                             progress=0.0,
                             message=(
-                                "Paused for imported-file recovery: "
-                                f"{type(exc).__name__}: {exc}"
+                                f"Paused for imported-file recovery: {failure_detail}"
                             ),
                         )
                     elif (
                         isinstance(exc, ProviderUnavailableError)
+                        or getattr(exc, "transient", False) is True
                         or type(exc).__name__ in self.TRANSIENT_FAILURE_NAMES
                     ) and transient_attempt <= self.TRANSIENT_RETRIES:
                         # The source engine was unreachable (a restart, a
@@ -8749,7 +8751,7 @@ class TankarrService:
                             failure_scope="service",
                             message=(
                                 f"Source unreachable (attempt {transient_attempt}/{self.TRANSIENT_RETRIES}), "
-                                f"retrying: {type(exc).__name__}: {exc}"
+                                f"retrying: {failure_detail}"
                             )[:500],
                         )
                     else:
@@ -8761,9 +8763,9 @@ class TankarrService:
                             if type(exc).__name__ in self.TRANSIENT_FAILURE_NAMES
                             else "release",
                             next_retry_at=0,
-                            message=f"{type(exc).__name__}: {exc}",
+                            message=failure_detail,
                         )
-                        failed_detail = f"{type(exc).__name__}: {exc}"
+                        failed_detail = failure_detail
             except KeyError:
                 # Deletion is allowed to remove queued history. A defensive
                 # no-op keeps a stale worker ID from killing the worker task.

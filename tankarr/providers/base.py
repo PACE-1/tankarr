@@ -25,12 +25,21 @@ class ProviderRequestError(RuntimeError):
     """A provider rejected a request or returned unusable content.
 
     ``status_code`` carries the last HTTP status when the failure came from a
-    response.
+    response. ``transient`` marks a failure of the source's infrastructure (a
+    timeout, a 5xx or a throttle after the HTTP retries) rather than of the
+    release, so the job is retried with a pause instead of being failed.
     """
 
-    def __init__(self, message: str, *, status_code: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        transient: bool = False,
+    ):
         super().__init__(message)
         self.status_code = status_code
+        self.transient = transient
 
 
 class ProviderUnavailableError(ProviderRequestError):

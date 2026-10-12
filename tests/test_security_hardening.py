@@ -333,6 +333,30 @@ async def test_websockets_need_the_same_authentication(tmp_path: Path):
             "failed to reach http://user:hunter2@qbittorrent:8080/api",
             "failed to reach http://user:[redacted]@qbittorrent:8080/api",
         ),
+        (
+            "http://nas.local/api?apikey=fixture%2Dpassword&mode=version",
+            "http://nas.local/api?apikey=[redacted]&mode=version",
+        ),
+        (
+            "http://nas.local/api?token=%66ixture-password#fragment",
+            "http://nas.local/api?token=[redacted]#fragment",
+        ),
+        (
+            "http%3A%2F%2Fnas.local%2Fapi%3Fapikey%3Dfixture%2Dpassword%26mode%3Dversion",
+            "http%3A%2F%2Fnas.local%2Fapi%3Fapikey%3D[redacted]%26mode%3Dversion",
+        ),
+        (
+            "http://nas.local/api?apikey=fixture%26password%3Bextra%23value&mode=version",
+            "http://nas.local/api?apikey=[redacted]&mode=version",
+        ),
+        (
+            "http://nas.local/api?apikey%3Dfixture-password",
+            "http://nas.local/api?apikey%3D[redacted]",
+        ),
+        (
+            "http%3A%2F%2Fnas.local%2Fapi%3Fapikey=fixture-password",
+            "http%3A%2F%2Fnas.local%2Fapi%3Fapikey=[redacted]",
+        ),
         ("nothing secret here", "nothing secret here"),
     ],
 )

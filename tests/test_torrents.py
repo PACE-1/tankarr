@@ -1433,6 +1433,39 @@ async def test_direct_release_is_downloaded_by_tankarr_and_imported_from_staging
 
 
 @pytest.mark.asyncio
+async def test_direct_download_failure_masks_credentials(tmp_path: Path):
+    database = Database(tmp_path / "tankarr.sqlite3")
+    database.initialize()
+    seed(database)
+    service = FakeService(tmp_path / "downloads")
+    service.settings.data_dir = tmp_path / "data"
+
+    class FailingArchive:
+        async def download(self, *_args, **_kwargs):
+            raise RuntimeError(
+                "GET http://nas.local/book?token=%66ixture-password failed"
+            )
+
+    manager = TorrentManager(
+        database,
+        service,  # type: ignore[arg-type]
+        SuccessfulImporter(),  # type: ignore[arg-type]
+        FakeMetadata(),  # type: ignore[arg-type]
+        FakeProwlarr(),  # type: ignore[arg-type]
+        FakeQBitTorrent(tmp_path / "download"),  # type: ignore[arg-type]
+        internet_archive=FailingArchive(),  # type: ignore[arg-type]
+    )
+    job = database.create_torrent_download("kamui", direct_release())
+    await manager._direct_download(job)
+
+    failed = database.get_torrent_download(job["id"])
+    assert failed["status"] == "failed"
+    assert failed["message"] == (
+        "RuntimeError: GET http://nas.local/book?token=[redacted] failed"
+    )
+
+
+@pytest.mark.asyncio
 async def test_failed_direct_release_can_import_an_existing_staged_file(tmp_path: Path):
     database = Database(tmp_path / "tankarr.sqlite3")
     database.initialize()
