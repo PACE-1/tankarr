@@ -81,7 +81,8 @@ def test_torrent_info_hash_uses_exact_bencoded_info_dictionary():
 
 def test_release_numbering_does_not_treat_c2c_as_chapter_two():
     assert release_number_hints("Series v01-02 (c2c)") == ("1-2", None)
-    assert infer_numbered_name("Series v01-02 (c2c)") == ("Series (c2c)", "1-2", None)
+    # The trailing "(c2c)" is a release tag, so it is not part of the series name.
+    assert infer_numbered_name("Series v01-02 (c2c)") == ("Series", "1-2", None)
 
 
 def test_torrent_api_does_not_expose_server_side_download_reference(tmp_path: Path):
@@ -1017,6 +1018,57 @@ async def test_skip_unnumbered_imports_the_identified_books_only(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_pack_preview_and_import_use_the_same_release_context(tmp_path):
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        library_dir=tmp_path / "library",
+        monitor_enabled=False,
+        metadata_enabled=False,
+    )
+    settings.ensure_directories()
+    provision_library_identity(settings)
+    database = Database(settings.database_path)
+    database.initialize()
+    seed(database)
+    published = []
+
+    class PublishingService(FakeService):
+        async def publish_external_import(self, _manga_id, chapter, path, *_args):
+            published.append(chapter)
+            return {"path": str(path), "reused": False}
+
+        async def reconcile_komga_library(self):
+            return {"ready": True}
+
+    service = PublishingService(tmp_path)
+    importer = LibraryImporter(settings, database, service)
+    content = tmp_path / "download"
+    make_volume_zip(content / "Series v01.cbz")
+    make_volume_zip(content / "Series 148.cbz", pages=4)
+    job = database.create_torrent_download(
+        "kamui", {**release(), "title": "Series v01-17 + 148-224"}
+    )
+    job = database.update_torrent_download(
+        job["id"], status="completed", content_path=str(content)
+    )
+    manager = TorrentManager(
+        database,
+        service,
+        importer,
+        FakeMetadata(),
+        FakeProwlarr(),
+        FakeQBitTorrent(content),
+    )
+
+    preview = await manager.contents(job["id"])
+    expected = {("1", None), (None, "148")}
+    assert {(item["volume"], item["chapter"]) for item in preview["files"]} == expected
+    result = await importer.import_torrent_download(job, content, confirm_language=True)
+    assert result["books"] == 2
+    assert {(item["volume"], item["chapter"]) for item in published} == expected
+
+
+@pytest.mark.asyncio
 async def test_a_multi_book_release_reports_each_book_as_it_lands(tmp_path: Path):
     """A ten-volume pack runs for minutes; one opaque bar cannot say how many
     books are already in the library."""
@@ -1161,7 +1213,7 @@ async def test_wholly_conflicting_pack_is_recycled_after_importer_cannot_use_it(
     make_volume_zip(content / "Kamui v02.cbz")
 
     class ConflictingImporter(SuccessfulImporter):
-        def scan_torrent_content(self, path):
+        def scan_torrent_content(self, path, *, release_title=""):
             return {
                 "root": str(path),
                 "items": [
