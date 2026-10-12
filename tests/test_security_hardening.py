@@ -349,6 +349,14 @@ async def test_websockets_need_the_same_authentication(tmp_path: Path):
             "http://nas.local/api?apikey=fixture%26password%3Bextra%23value&mode=version",
             "http://nas.local/api?apikey=[redacted]&mode=version",
         ),
+        (
+            "http://nas.local/api?apikey%3Dfixture-password",
+            "http://nas.local/api?apikey%3D[redacted]",
+        ),
+        (
+            "http%3A%2F%2Fnas.local%2Fapi%3Fapikey=fixture-password",
+            "http%3A%2F%2Fnas.local%2Fapi%3Fapikey=[redacted]",
+        ),
         ("nothing secret here", "nothing secret here"),
     ],
 )
