@@ -1088,19 +1088,29 @@ class ReleaseMonitor:
         if entry.get("no_sources"):
             return await self._recover_series_without_sources(manga_id)
         rows = list(entry.get("chapters") or [])
+        # The Wanted snapshot predates queue_missing. A configured provider
+        # is not proof that acquisition succeeded: check the resulting jobs.
+        active_slots = {
+            slot_key_for(release): release
+            for release in self.database.preferred_missing_releases(manga_id)
+            if release.get("queue_status")
+        }
         grabbed = 0
         searched = 0
         chapter_slots: list[dict[str, Any]] = []
         book_slots: list[dict[str, Any]] = []
         for row in rows:
             slot_key = slot_key_for(row)
-            if row.get("queue_status"):
+            active = active_slots.get(slot_key)
+            if active is not None:
                 self.database.record_wanted_attempt(
                     manga_id,
                     slot_key,
                     channel=CHANNEL_SOURCES,
-                    outcome=PENDING,
-                    detail=f"already {row['queue_status']}",
+                    outcome=PENDING if row.get("queue_status") else QUEUED,
+                    detail=f"already {active['queue_status']}"
+                    if row.get("queue_status")
+                    else str(active.get("source_name") or active.get("provider") or ""),
                 )
                 continue
             if row.get("blocked"):
@@ -1137,15 +1147,17 @@ class ReleaseMonitor:
                     elif row.get("volume"):
                         book_slots.append(row)
                     continue
-                # A real release the sources carry: ``queue_missing`` has just
-                # created its job, so the source rung answered by acting.
                 self.database.record_wanted_attempt(
                     manga_id,
                     slot_key,
                     channel=CHANNEL_SOURCES,
-                    outcome=QUEUED,
-                    detail=str(row.get("source_name") or row.get("provider") or ""),
+                    outcome=UNAVAILABLE,
+                    detail="source release could not be queued",
                 )
+                if row.get("chapter"):
+                    chapter_slots.append(row)
+                elif row.get("volume"):
+                    book_slots.append(row)
                 continue
             self.database.record_wanted_attempt(
                 manga_id,

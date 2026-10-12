@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from tankarr.config import Settings
 from tankarr.providers import build_providers
+from tankarr.providers import suwayomi as suwayomi_provider
 from tankarr.providers.base import ProviderRequestError, ProviderUnavailableError
 from tankarr.providers.suwayomi import SuwayomiProvider
 
@@ -146,6 +147,17 @@ def graphql_response(request: Request) -> Response:
             },
         )
     raise AssertionError(f"Unexpected GraphQL operation: {query}")
+
+
+@pytest.fixture(autouse=True)
+def steady_host(monkeypatch):
+    """Download concurrency adapts to the memory pressure of the host.
+
+    The page tests expect pages to be fetched in parallel, so they must not
+    read the real cgroup and memory state of the machine running them.
+    """
+
+    monkeypatch.setattr(suwayomi_provider, "local_download_pressure", lambda: {})
 
 
 def provider() -> SuwayomiProvider:
@@ -851,6 +863,35 @@ def test_parse_chapter_treats_a_bare_volume_name_as_a_whole_book():
     assert subtitled["release_unit"] == "volume"
     assert subtitled["volume"] == "2"
     assert subtitled["chapter"] is None
+
+
+def test_parse_chapter_reads_a_language_tag_after_the_volume_number():
+    """French aggregators list whole books as "Volume 12 VF"."""
+
+    provider = _bare_provider()
+    for name, volume in (
+        ("Volume 1 VF", "1"),
+        ("Volume 12 VF", "12"),
+        ("Tome 3 VOSTFR", "3"),
+        ("Vol. 7 (FR)", "7"),
+        ("Volume 4 [VF]: Reunion", "4"),
+    ):
+        release = provider._parse_chapter(
+            {"id": 7, "name": name, "chapterNumber": 5},
+            language="fr",
+            source={"id": "5"},
+        )
+        assert release["release_unit"] == "volume", name
+        assert release["volume"] == volume, name
+        assert release["chapter"] is None, name
+
+    for name in ("Volume 1 Fragments", "Volume 2 VF Chapter 9", "396 VF"):
+        release = provider._parse_chapter(
+            {"id": 8, "name": name, "chapterNumber": 5},
+            language="fr",
+            source={"id": "5"},
+        )
+        assert release["release_unit"] == "chapter", name
 
 
 def test_parse_chapter_keeps_chapter_numbers_when_the_name_names_a_chapter():

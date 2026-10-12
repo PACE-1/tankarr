@@ -2636,3 +2636,100 @@ def test_retiring_a_source_drops_the_queued_jobs_of_its_releases(tmp_path: Path)
     database.retire_uninstalled_sources({"suwayomi:kept"})
 
     assert database.list_queued_job_ids() == [int(kept["id"])]
+
+
+def _volume_release(identifier: str, volume: str, **extra):
+    return {
+        "id": identifier,
+        "volume": volume,
+        "chapter": None,
+        "source_chapter": None,
+        "canonical_chapter": None,
+        "release_unit": "volume",
+        "title": f"Volume {volume}",
+        "language": "fr",
+        "provider": "suwayomi",
+        "groups": [],
+        "publish_at": None,
+        "source_url": f"https://example.test/volume-{volume}",
+        **extra,
+    }
+
+
+def test_a_whole_book_from_a_provider_is_stored_as_a_volume_and_can_be_queued(
+    tmp_path: Path,
+):
+    """Volume releases used to fall back to release_unit 'chapter' with no
+    number: Wanted picked them for volume slots and create_job refused them
+    until the next restart repaired the rows."""
+    database = Database(tmp_path / "tankarr.sqlite3")
+    database.initialize()
+    database.upsert_manga(
+        {
+            "id": "manga-1",
+            "title": "Example",
+            "description": "",
+            "cover_url": None,
+            "authors": [],
+            "original_language": "ja",
+        },
+        "fr",
+    )
+
+    database.upsert_chapters(
+        "manga-1", [_volume_release("vol-1", "1"), _volume_release("vol-2", "2")]
+    )
+
+    row = {item["id"]: item for item in database.list_all_chapters("manga-1")}["vol-1"]
+    assert row["release_unit"] == "volume"
+    assert row["volume"] == "1"
+    assert row["chapter"] is None
+    assert row["numbering_status"] == "mapped"
+    assert row["numbering_method"] == "volume_identity"
+    job = database.create_job("manga-1", "vol-1", "fr")
+    assert job["chapter_volume"] == "1"
+
+    # A refresh keeps the unit.
+    database.upsert_chapters("manga-1", [_volume_release("vol-1", "1")])
+    row = {item["id"]: item for item in database.list_all_chapters("manga-1")}["vol-1"]
+    assert row["release_unit"] == "volume"
+
+
+def test_a_release_can_be_upgraded_to_a_book_but_not_downgraded(tmp_path: Path):
+    database = Database(tmp_path / "tankarr.sqlite3")
+    database.initialize()
+    database.upsert_manga(
+        {
+            "id": "manga-1",
+            "title": "Example",
+            "description": "",
+            "cover_url": None,
+            "authors": [],
+            "original_language": "ja",
+        },
+        "fr",
+    )
+    chapter_row = {
+        "id": "entry-1",
+        "volume": "3",
+        "chapter": None,
+        "title": "Volume 3",
+        "language": "fr",
+        "provider": "suwayomi",
+        "groups": [],
+        "publish_at": None,
+        "source_url": "https://example.test/volume-3",
+        "release_unit": "chapter",
+    }
+    database.upsert_chapters("manga-1", [chapter_row])
+    stored = {item["id"]: item for item in database.list_all_chapters("manga-1")}
+    assert stored["entry-1"]["release_unit"] == "chapter"
+
+    database.upsert_chapters("manga-1", [{**chapter_row, "release_unit": "volume"}])
+    stored = {item["id"]: item for item in database.list_all_chapters("manga-1")}
+    assert stored["entry-1"]["release_unit"] == "volume"
+    assert stored["entry-1"]["volume"] == "3"
+
+    database.upsert_chapters("manga-1", [chapter_row])
+    stored = {item["id"]: item for item in database.list_all_chapters("manga-1")}
+    assert stored["entry-1"]["release_unit"] == "volume"

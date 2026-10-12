@@ -22,6 +22,7 @@ from tankarr.internet_archive import PROVIDER_NAME as DIRECT_PROVIDER
 from tankarr.metadata.service import MetadataService
 from tankarr.prowlarr import ProwlarrClient
 from tankarr.qbittorrent import QBitTorrentClient, QBitTorrentError
+from tankarr.redaction import redact_secrets
 from tankarr.release_kind import classify_release
 from tankarr.sabnzbd import SABnzbdError
 from tankarr.series_unit import is_volume_release, normalize_series_unit
@@ -138,7 +139,7 @@ class TorrentManager:
                 await self.poll_once()
                 self.last_error = None
             except Exception as exc:  # noqa: BLE001 - durable jobs remain retryable
-                self.last_error = f"{type(exc).__name__}: {exc}"[:500]
+                self.last_error = redact_secrets(f"{type(exc).__name__}: {exc}")[:500]
             loop_now = asyncio.get_running_loop().time()
             if (
                 self._last_orphan_sweep_at is None
@@ -151,7 +152,7 @@ class TorrentManager:
                 except Exception as exc:  # noqa: BLE001 - next hour retries
                     self.last_orphan_sweep = {
                         "at": datetime.now(UTC).isoformat(),
-                        "error": f"{type(exc).__name__}: {exc}"[:300],
+                        "error": redact_secrets(f"{type(exc).__name__}: {exc}")[:300],
                     }
             await asyncio.sleep(self.settings.torrent_poll_interval_seconds)
 
@@ -500,7 +501,7 @@ class TorrentManager:
                 errors.append(
                     {
                         "provider": source,
-                        "error": f"{type(exc).__name__}: {exc}"[:500],
+                        "error": redact_secrets(f"{type(exc).__name__}: {exc}")[:500],
                     }
                 )
                 source_counts[source] = 0
@@ -777,7 +778,9 @@ class TorrentManager:
                 )
             except Exception as exc:
                 self.database.update_torrent_download(
-                    job["id"], status="failed", message=f"{type(exc).__name__}: {exc}"
+                    job["id"],
+                    status="failed",
+                    message=redact_secrets(f"{type(exc).__name__}: {exc}"),
                 )
                 raise
         try:
@@ -796,7 +799,9 @@ class TorrentManager:
             return self._record_qbit_state(job, current)
         except Exception as exc:
             self.database.update_torrent_download(
-                job["id"], status="failed", message=f"{type(exc).__name__}: {exc}"
+                job["id"],
+                status="failed",
+                message=redact_secrets(f"{type(exc).__name__}: {exc}"),
             )
             raise
 
@@ -946,7 +951,9 @@ class TorrentManager:
             raise
         except Exception as exc:  # noqa: BLE001 - the job records its failure
             self.database.update_torrent_download(
-                job_id, status="failed", message=f"{type(exc).__name__}: {exc}"[:500]
+                job_id,
+                status="failed",
+                message=redact_secrets(f"{type(exc).__name__}: {exc}")[:500],
             )
 
     async def _poll_direct(self, job: dict[str, Any]) -> dict[str, Any] | None:
@@ -1347,7 +1354,9 @@ class TorrentManager:
             )
         except Exception as exc:
             self.database.update_torrent_download(
-                job["id"], status="failed", message=f"{type(exc).__name__}: {exc}"
+                job["id"],
+                status="failed",
+                message=redact_secrets(f"{type(exc).__name__}: {exc}"),
             )
             raise
         imported_books = int(result["books"])

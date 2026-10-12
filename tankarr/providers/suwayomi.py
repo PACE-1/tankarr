@@ -820,8 +820,13 @@ class SuwayomiProvider(Provider):
     # this for Nana: 21 "chapters" of 180-280 pages that are the 21 volumes.
     # Taking the index as a chapter number puts a book in a chapter slot and
     # leaves the real chapters to be downloaded again from another source.
+    # French aggregators add the edition: "Volume 12 VF". A language tag after
+    # the number does not make the entry a chapter.
     _WHOLE_BOOK_NAME = re.compile(
-        r"^\s*(?:vol(?:ume)?\.?|tome|book)\s*0*(\d+)\s*(?:[:\-\u2013\u2014|].*)?$",
+        r"^\s*(?:vol(?:ume)?\.?|tome|book)\s*0*(\d+)"
+        r"(?:\s*[\[(]?\s*(?:vf|vostfr|vo|va|vus|fr|en|eng|es|esp|it|ita|raw|hd)"
+        r"\s*[\])]?)?"
+        r"\s*(?:[:\-\u2013\u2014|].*)?$",
         re.IGNORECASE,
     )
     _CHAPTER_MARKER = re.compile(
