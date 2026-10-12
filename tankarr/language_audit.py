@@ -209,6 +209,12 @@ def automatic_english_decision(
             "basis": "ocr",
             "reason": "OCR confirmed English dialogue",
         }
+    if audit.get("script_review_required"):
+        return {
+            "verdict": "review",
+            "basis": "script_uncertain",
+            "reason": "A script guess conflicts with inconclusive OCR; confirm the page language manually",
+        }
     return {
         "verdict": "confirmed",
         "basis": "metadata_fallback",
@@ -368,6 +374,7 @@ def audit_english_pages(
                 "non-Latin script seen in the artwork, dialogue is English"
             )
         elif guesses:
+            evidence["script_review_required"] = evidence.get("verdict") == "review"
             evidence["script_note"] = (
                 "a script guess on a single page is not corroborated by another page"
             )

@@ -196,3 +196,28 @@ def test_the_same_script_on_two_pages_still_refuses_the_book(tmp_path, monkeypat
     )
     assert decision["verdict"] == "refused"
     assert decision["basis"] == "foreign_script"
+
+
+def test_uncorroborated_script_with_sparse_ocr_requires_manual_confirmation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(language_audit.shutil, "which", lambda _name: "tesseract")
+    monkeypatch.setattr(
+        language_audit.subprocess,
+        "run",
+        _guessing_run(
+            [("Japanese", 6.0), ("Latin", 3.0), ("Unknown", 0.0)], "ka ta na"
+        ),
+    )
+
+    evidence = language_audit.audit_english_pages(_pages(tmp_path), detect_scripts=True)
+    assert evidence["verdict"] == "review"
+    assert not evidence["poor_english_signal"]
+    decision = language_audit.automatic_english_decision(
+        evidence,
+        declared_language="en",
+        expected_language="en",
+        names=["Series v01 [English]"],
+    )
+    assert decision["verdict"] == "review"
+    assert decision["basis"] == "script_uncertain"
