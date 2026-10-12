@@ -716,6 +716,10 @@ async def test_page_http_failure_distinguishes_source_from_runtime(
     assert type(caught.value) is (
         ProviderRequestError if runtime_responding else ProviderUnavailableError
     )
+    # A source that timed out or answered 5xx after the HTTP retries is not a
+    # bad release, whether or not Suwayomi itself is up: the job is retried.
+    assert caught.value.transient is runtime_responding
+    assert caught.value.status_code == 500
 
 
 @pytest.mark.asyncio

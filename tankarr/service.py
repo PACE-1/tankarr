@@ -8729,6 +8729,7 @@ class TankarrService:
                         )
                     elif (
                         isinstance(exc, ProviderUnavailableError)
+                        or getattr(exc, "transient", False) is True
                         or type(exc).__name__ in self.TRANSIENT_FAILURE_NAMES
                     ) and transient_attempt <= self.TRANSIENT_RETRIES:
                         # The source engine was unreachable (a restart, a
