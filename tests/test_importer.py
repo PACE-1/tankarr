@@ -16,7 +16,12 @@ from tankarr.app import create_app
 from tankarr.archive import package_cbz, sha256, validate_cbz
 from tankarr.config import Settings
 from tankarr.database import Database
-from tankarr.importer import LibraryImporter, natural_key, split_author_title
+from tankarr.importer import (
+    LibraryImporter,
+    infer_numbered_name,
+    natural_key,
+    split_author_title,
+)
 from tankarr.naming import final_library_path
 from tankarr.service import (
     ExternalImportConflict,
@@ -1377,3 +1382,178 @@ def test_release_year_after_volume_is_not_part_of_volume_number():
         None,
     )
     assert infer_numbered_name("Series Vol.01.5") == ("Series", "1.5", None)
+
+
+def test_scan_groups_scene_release_packs_as_one_series(tmp_path: Path):
+    """The folder names the pack ranges; the UI keeps its two units separate."""
+    import_root = tmp_path / "incoming"
+    pack = import_root / "Chainsaw Man v19-20 + 187-190"
+    make_volume_zip(pack / "Chainsaw Man v19 (2025) (Digital) (1r0n).cbz")
+    make_volume_zip(pack / "Chainsaw Man v20 (2026) (Digital) (1r0n) (f2).cbz")
+    make_volume_zip(pack / "Chainsaw Man 187 (2024) (Digital) (1r0n).cbz")
+    scans = import_root / "The Color of the End"
+    make_volume_zip(scans / "v1 c001 [#EverydayHeroes Scans].cbz")
+    make_volume_zip(scans / "v1 c002 [Nextyle Stadia].cbz")
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        library_dir=tmp_path / "library",
+        import_dir=import_root,
+        monitor_enabled=False,
+    )
+    provision_library_identity(settings)
+    with TestClient(create_app(settings)) as client:
+        payload = client.get("/api/import/scan").json()
+    assert {group["title"] for group in payload["groups"]} == {
+        "Chainsaw Man",
+        "The Color of the End",
+    }
+    packs = [group for group in payload["groups"] if group["title"] == "Chainsaw Man"]
+    assert len(packs) == 2
+    assert len({group["key"] for group in packs}) == 2
+    numbering = {
+        (item["volume"], item["chapter"]) for group in packs for item in group["items"]
+    }
+    assert numbering == {("19", None), ("20", None), (None, "187")}
+    scans = next(
+        group for group in payload["groups"] if group["title"] == "The Color of the End"
+    )
+    assert [item["chapter"] for item in scans["items"]] == [
+        "1",
+        "2",
+    ]
+    for group in payload["groups"]:
+        for item in group["items"]:
+            assert "bare_number" not in item and "explicit_volume" not in item
+
+
+def test_torrent_scan_reads_bare_numbers_next_to_volumes_as_chapters(tmp_path: Path):
+    """A pack of "v01-17 + 148-224" holds chapters 148-224, not volume 148."""
+    pack = tmp_path / "Dandadan (Digital) (1r0n)"
+    make_volume_zip(pack / "Dandadan v01 (2022) (Digital) (1r0n).cbz")
+    make_volume_zip(pack / "Dandadan v05 (2023) (Digital) (1r0n) (f).cbz")
+    make_volume_zip(pack / "Dandadan 148 (2024) (Digital) (1r0n).cbz")
+    make_volume_zip(pack / "Dandadan 224 (2026) (Digital) (1r0n).cbz")
+
+    importer = LibraryImporter.__new__(LibraryImporter)
+    scan = importer.scan_torrent_content(
+        pack, release_title="Dandadan v01-17 + 148-224"
+    )
+
+    numbering = {
+        item["path"]: (item["volume"], item["chapter"]) for item in scan["items"]
+    }
+    assert numbering == {
+        "Dandadan v01 (2022) (Digital) (1r0n).cbz": ("1", None),
+        "Dandadan v05 (2023) (Digital) (1r0n) (f).cbz": ("5", None),
+        "Dandadan 148 (2024) (Digital) (1r0n).cbz": (None, "148"),
+        "Dandadan 224 (2026) (Digital) (1r0n).cbz": (None, "224"),
+    }
+    for item in scan["items"]:
+        assert "bare_number" not in item and "explicit_volume" not in item
+
+
+def test_torrent_scan_keeps_a_bare_numbered_pack_as_volumes(tmp_path: Path):
+    """With no explicit volume beside them, bare numbers keep their meaning."""
+    pack = tmp_path / "Series"
+    make_volume_zip(pack / "Series 01.cbz")
+    make_volume_zip(pack / "Series 02.cbz")
+
+    scan = LibraryImporter.__new__(LibraryImporter).scan_torrent_content(pack)
+
+    assert {(item["volume"], item["chapter"]) for item in scan["items"]} == {
+        ("1", None),
+        ("2", None),
+    }
+
+
+def test_a_bare_number_range_is_not_read_as_its_last_volume():
+    for stem in ("Pineapple Army 1-6 (ja)", "Pineapple Army 1-6"):
+        assert infer_numbered_name(stem) == ("Pineapple Army 1-6", None, None)
+    assert infer_numbered_name("Series 05 (2024) (Digital) (1r0n)") == (
+        "Series",
+        "5",
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    "stem, expected",
+    [
+        ("Series [c001]", ("Series", None, "1")),
+        ("Series (v02)", ("Series", "2", None)),
+        ("Series [c001] (2024) [group]", ("Series", None, "1")),
+        ("Series (v02) (Digital)", ("Series", "2", None)),
+        ("Series (Full Color)", ("Series (Full Color)", None, None)),
+        ("Series v01-02 (c2c)", ("Series", "1-2", None)),
+    ],
+)
+def test_release_tags_preserve_numbering_and_unnumbered_titles(stem, expected):
+    assert infer_numbered_name(stem) == expected
+
+
+@pytest.mark.parametrize("separator", ["-", " - ", "–", " – ", "—", " — "])
+def test_range_archives_are_not_imported_as_a_single_volume(tmp_path, separator):
+    name = f"Series 1{separator}6 (Digital).cbz"
+    make_volume_zip(tmp_path / name)
+    importer = LibraryImporter.__new__(LibraryImporter)
+    scan = importer.scan_torrent_content(tmp_path)
+    assert scan["items"][0]["volume"] is None
+    assert scan["items"][0]["chapter"] is None
+    groups = importer._scan_root(tmp_path)["groups"]
+    # Grouping may not turn a known ambiguous omnibus into volume one.
+    assert groups[0]["items"][0]["volume"] is None
+
+
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        ("Series v01-02", ("2", None)),
+        ("Series v01 + c002-003", (None, "2")),
+        ("Series v01 + 002-003", (None, "2")),
+        ("Series v01-02 + c002-003", (None, None)),
+        ("Series v01 + c003-004", (None, None)),
+        ("Different Series v01 + c002-003", (None, None)),
+        ("Series", (None, None)),
+    ],
+)
+def test_mixed_numbering_requires_matching_unambiguous_pack_context(
+    tmp_path, title, expected
+):
+    make_volume_zip(tmp_path / "Series v01.cbz")
+    make_volume_zip(tmp_path / "Series 02.cbz")
+    scan = LibraryImporter.__new__(LibraryImporter).scan_torrent_content(
+        tmp_path, release_title=title
+    )
+    item = next(item for item in scan["items"] if item["path"] == "Series 02.cbz")
+    assert (item["volume"], item["chapter"]) == expected
+    assert not {"bare_number", "explicit_volume", "ambiguous_number"} & item.keys()
+
+
+def test_folder_and_release_disagreement_stays_unassigned(tmp_path):
+    pack = tmp_path / "Series v01-02"
+    make_volume_zip(pack / "Series v01.cbz")
+    make_volume_zip(pack / "Series 02.cbz")
+    scan = LibraryImporter.__new__(LibraryImporter).scan_torrent_content(
+        pack, release_title="Series v01 + c002-003"
+    )
+    item = next(item for item in scan["items"] if item["path"] == "Series 02.cbz")
+    assert item["volume"] is None and item["chapter"] is None
+
+
+def test_an_unassigned_import_item_requires_a_number():
+    with pytest.raises(ValueError, match="needs a volume or chapter number"):
+        LibraryImporter._items_for_unit(
+            [{"path": "Series 02.cbz", "volume": None, "chapter": None}], None
+        )
+
+
+def test_library_keeps_ambiguous_files_apart_from_known_books(tmp_path):
+    make_volume_zip(tmp_path / "Series v01.cbz")
+    make_volume_zip(tmp_path / "Series 02.cbz")
+    groups = LibraryImporter.__new__(LibraryImporter)._scan_root(tmp_path)["groups"]
+    assert len(groups) == 2
+    assert {group["title"] for group in groups} == {"Series"}
+    assert len({group["key"] for group in groups}) == 2
+    assert {
+        (group["items"][0]["volume"], group["items"][0]["chapter"]) for group in groups
+    } == {("1", None), (None, None)}

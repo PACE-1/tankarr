@@ -38,11 +38,11 @@ function effectiveSeriesUnit(manga: Manga): SeriesUnit {
 
 function initialNumbers(group: ImportGroup, unit: SeriesUnit) {
   return Object.fromEntries(
-    group.items.map((item, index) => [
+    group.items.map((item) => [
       item.path,
       String(
         (unit === "chapters" ? item.chapter || item.volume : item.volume || item.chapter) ??
-          index + 1,
+          "",
       ),
     ]),
   );
@@ -239,10 +239,13 @@ export default function ImportPage() {
   const setTarget = (group: ImportGroup, target: string) => {
     const manga = libraryById.get(target);
     const nextDefault = manga ? effectiveSeriesUnit(manga) : inferredGroupUnit(group);
+    const nextUnit = group.items.some((item) => item.volume || item.chapter)
+      ? inferredGroupUnit(group)
+      : nextDefault;
     setTargets((current) => ({ ...current, [group.key]: target }));
     setDefaultUnits((current) => ({ ...current, [group.key]: nextDefault }));
-    setUnits((current) => ({ ...current, [group.key]: nextDefault }));
-    setNumbers((current) => ({ ...current, [group.key]: initialNumbers(group, nextDefault) }));
+    setUnits((current) => ({ ...current, [group.key]: nextUnit }));
+    setNumbers((current) => ({ ...current, [group.key]: initialNumbers(group, nextUnit) }));
   };
 
   const updateNumber = (groupKey: string, path: string, value: string) => {
