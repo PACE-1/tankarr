@@ -71,7 +71,12 @@ VOLUME_DIR_PATTERN = re.compile(
 AUTHOR_TITLE_PATTERN = re.compile(r"^(?P<author>.{2,60}?)\s+-\s+(?P<title>.{2,})$")
 # Scene-style release tags at the end of a file name: "(2021) (Digital) (1r0n) (f2)",
 # "[#EverydayHeroes Scans]". They describe the release, not the series.
-RELEASE_TAG_TAIL_PATTERN = re.compile(r"(?:\s*[(\[][^()\[\]]*[)\]])+\s*$")
+RELEASE_TAG_PATTERN = re.compile(r"\([^()]*\)|\[[^\[\]]*\]")
+RELEASE_TAG_TAIL_PATTERN = re.compile(r"(?:\s*(?:\([^()]*\)|\[[^\[\]]*\]))+\s*$")
+BARE_RANGE_PATTERN = re.compile(r"\d+(?:\.\d+)?\s*[-–—]\s*\d+(?:\.\d+)?$")
+PACK_CHAPTER_TAIL_PATTERN = re.compile(
+    r"\s*\+\s*(?P<start>\d+(?:\.\d+)?)(?:\s*[-–—]\s*(?P<end>\d+(?:\.\d+)?))?\s*$"
+)
 FLEXIBLE_VOLUME_PATTERN = re.compile(
     r"(?i)(?:^|[\s._\-[(])(?:v|vol(?:ume)?)\.?\s*0*(?P<start>\d+(?:\.\d+)?)"
     r"(?:\s*[-–]\s*(?:v|vol(?:ume)?)?\.?\s*0*(?P<end>\d+(?:\.\d+)?))?"
@@ -300,23 +305,75 @@ def _normalized_volume_number(value: str) -> str:
     return _normalized_number(value)
 
 
+def _release_stem(stem: str) -> str:
+    """Remove trailing release metadata without erasing bracketed numbering."""
+
+    def preserve_number(match: re.Match[str]) -> str:
+        content = match.group()[1:-1]
+        if FLEXIBLE_CHAPTER_PATTERN.search(content) or FLEXIBLE_VOLUME_PATTERN.search(
+            content
+        ):
+            return f" {content} "
+        return match.group()
+
+    stem = RELEASE_TAG_PATTERN.sub(preserve_number, stem).strip()
+    tail = RELEASE_TAG_TAIL_PATTERN.search(stem)
+    if tail:
+        prefix = stem[: tail.start()].strip()
+        if (
+            FLEXIBLE_CHAPTER_PATTERN.search(prefix)
+            or FLEXIBLE_VOLUME_PATTERN.search(prefix)
+            or SERIES_NUMBER_PATTERN.match(prefix)
+            or BARE_RANGE_PATTERN.search(prefix)
+        ):
+            stem = prefix
+    return stem
+
+
+def _pack_number_unit(
+    number: str, series: str, contexts: tuple[str, ...]
+) -> str | None:
+    """Use only matching pack titles; conflicting or out-of-range hints stay open."""
+
+    units: set[str] = set()
+    for context in contexts:
+        title = _release_stem(context)
+        volume = FLEXIBLE_VOLUME_PATTERN.search(title)
+        chapter = FLEXIBLE_CHAPTER_PATTERN.search(title)
+        matches = [match for match in (volume, chapter) if match is not None]
+        if not matches:
+            continue
+        first = min(matches, key=lambda match: match.start())
+        if title[: first.start()].strip(" ._-").casefold() != series.casefold():
+            continue
+        if volume and not chapter:
+            chapter = PACK_CHAPTER_TAIL_PATTERN.fullmatch(title[volume.end() :])
+        found = set()
+        for unit, match in (("volume", volume), ("chapter", chapter)):
+            if match is not None:
+                start = float(match.group("start"))
+                end = float(match.group("end") or match.group("start"))
+                if start <= float(number) <= end:
+                    found.add(unit)
+        units.update(found or {"ambiguous"})
+    return next(iter(units)) if len(units) == 1 else ("ambiguous" if units else None)
+
+
 def infer_numbered_name(stem: str) -> tuple[str, str | None, str | None]:
     """Extract one explicit chapter/volume token without guessing from a year."""
 
     # "Series v01 (2021) (Digital) (group)" and "Series v02 (2022) (Digital)
     # (group)" are one series: drop the trailing release tags first, so the
     # year and the group do not end up in the series name.
-    stem = RELEASE_TAG_TAIL_PATTERN.sub("", stem).strip() or stem
+    stem = _release_stem(stem)
     chapter_match = FLEXIBLE_CHAPTER_PATTERN.search(stem)
     volume_match = FLEXIBLE_VOLUME_PATTERN.search(stem)
     selected = chapter_match or volume_match
     if selected is None:
+        if BARE_RANGE_PATTERN.search(stem):
+            return stem.strip(), None, None
         legacy = SERIES_NUMBER_PATTERN.match(stem.strip())
         if legacy is None:
-            return stem.strip(), None, None
-        separator = stem.strip()[legacy.end("base") : legacy.start("number")]
-        if separator == "-" and legacy.group("base")[-1:].isdigit():
-            # "Series 1-6" is six volumes in one file, not volume 6.
             return stem.strip(), None, None
         return (
             legacy.group("base").strip(),
@@ -664,7 +721,7 @@ class LibraryImporter:
         items: list[dict[str, Any]] = []
         skipped: list[dict[str, str]] = []
         self._walk(root, root, items, skipped)
-        groups = self._group_items(items)
+        groups = self._group_items(items, root=root)
         return {
             "root": display_root or str(root),
             "groups": groups,
@@ -792,7 +849,7 @@ class LibraryImporter:
             series_hint = parent.name
         elif not series_hint:
             series_hint = stem
-        tagless = RELEASE_TAG_TAIL_PATTERN.sub("", stem).strip() or stem
+        tagless = _release_stem(stem)
         explicit_volume = FLEXIBLE_VOLUME_PATTERN.search(tagless) is not None
         return {
             "path": relative,
@@ -806,27 +863,37 @@ class LibraryImporter:
             # Internal hints for _group_items; removed there.
             "explicit_volume": explicit_volume and chapter is None,
             "bare_number": volume is not None and not explicit_volume,
+            "ambiguous_number": volume is None
+            and chapter is None
+            and bool(BARE_RANGE_PATTERN.search(tagless)),
         }
 
     @staticmethod
-    def _bare_numbers_to_chapters(members: list[dict[str, Any]]) -> None:
-        """Read a bare number next to explicit volumes as a chapter.
+    def _resolve_pack_numbers(members: list[dict[str, Any]], *contexts: str) -> bool:
+        """Resolve bare numbers from pack ranges, keeping ambiguous files unnumbered."""
 
-        A release pack mixes collected volumes ("v20") with newer loose
-        chapters ("187"). Next to explicit volumes, a bare number is a chapter,
-        not volume 187. The scan hints are consumed here.
-        """
-
-        if any(item.get("explicit_volume") for item in members):
-            for item in members:
-                if item.get("bare_number"):
-                    item["chapter"], item["volume"] = item["volume"], None
+        mixed = any(
+            item.get("explicit_volume") or item.get("chapter") for item in members
+        )
+        ambiguous = False
         for item in members:
+            if item.get("bare_number"):
+                number = item["volume"]
+                unit = _pack_number_unit(number, item["series_hint"], contexts)
+                if unit == "chapter":
+                    item["chapter"], item["volume"] = number, None
+                elif unit == "ambiguous" or (unit is None and mixed):
+                    item["volume"] = None
+                    ambiguous = True
+            ambiguous = bool(item.pop("ambiguous_number", False)) or ambiguous
             item.pop("bare_number", None)
             item.pop("explicit_volume", None)
+        return ambiguous
 
     @staticmethod
-    def _group_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _group_items(
+        items: list[dict[str, Any]], *, root: Path
+    ) -> list[dict[str, Any]]:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for item in items:
             if item["kind"] == "folder":
@@ -845,22 +912,40 @@ class LibraryImporter:
         for key, members in grouped.items():
             members.sort(key=lambda item: natural_key(item["path"]))
             authors, title = split_author_title(members[0]["series_hint"])
-            LibraryImporter._bare_numbers_to_chapters(members)
+            parent = (root / members[0]["path"]).parent
+            ambiguous = LibraryImporter._resolve_pack_numbers(members, parent.name)
             if (
                 len(members) == 1
                 and members[0]["volume"] is None
                 and members[0]["chapter"] is None
+                and not ambiguous
             ):
                 members[0]["volume"] = "1"  # A standalone file is one volume.
-            groups.append(
-                {
-                    "key": key,
-                    "title": title,
-                    "authors": authors,
-                    "items": members,
-                    "total_size": sum(item["size"] for item in members),
-                }
-            )
+            # The import page chooses one unit per group. Keep collected books,
+            # loose chapters and unresolved files separate so a manual choice
+            # cannot relabel the files whose unit is already known.
+            partitions: dict[str, list[dict[str, Any]]] = {}
+            for item in members:
+                unit = (
+                    "chapters"
+                    if item.get("chapter")
+                    else "volumes"
+                    if item.get("volume")
+                    else "unassigned"
+                )
+                partitions.setdefault(unit, []).append(item)
+            if len(partitions) == 1:
+                partitions = {"all": members}
+            for unit, partition in partitions.items():
+                groups.append(
+                    {
+                        "key": key if unit == "all" else f"{key}:{unit}",
+                        "title": title,
+                        "authors": authors,
+                        "items": partition,
+                        "total_size": sum(item["size"] for item in partition),
+                    }
+                )
         groups.sort(key=lambda group: group["title"].lower())
         return groups
 
@@ -986,6 +1071,10 @@ class LibraryImporter:
         items = [dict(item) for item in raw_items]
         if unit is None:
             for item in items:
+                if not item.get("volume") and not item.get("chapter"):
+                    raise ValueError(
+                        f"{item.get('path', 'Import item')} needs a volume or chapter number"
+                    )
                 item["release_unit"] = (
                     "volume"
                     if item.get("volume") and not item.get("chapter")
@@ -1402,7 +1491,9 @@ class LibraryImporter:
         except (TypeError, ValueError):
             return False
 
-    def scan_torrent_content(self, content: Path) -> dict[str, Any]:
+    def scan_torrent_content(
+        self, content: Path, *, release_title: str = ""
+    ) -> dict[str, Any]:
         """Inspect only one qBittorrent-owned content path."""
 
         if not content.exists() or content.is_symlink():
@@ -1438,15 +1529,18 @@ class LibraryImporter:
             raise TorrentImportAmbiguous(detail)
         if len(items) > 500:
             raise TorrentImportAmbiguous("Torrent contains more than 500 comic books")
-        # The same pack rule as the library scan: a release that mixes "v01"
-        # volumes with bare-numbered chapters ("Series 148 (2024) (Digital)")
-        # holds chapters, not volume 148.
+        # Resolve only sibling files of the same series, using the same range
+        # evidence as the library scan and the torrent contents preview.
         packs: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for item in items:
-            key = (str(Path(str(item["path"])).parent), str(item.get("series_hint")))
+            key = (
+                str(Path(str(item["path"])).parent),
+                str(item.get("series_hint")).casefold(),
+            )
             packs.setdefault(key, []).append(item)
         for members in packs.values():
-            self._bare_numbers_to_chapters(members)
+            parent = (root / members[0]["path"]).parent
+            self._resolve_pack_numbers(members, parent.name, release_title)
         return {"root": root, "items": items, "skipped": skipped}
 
     async def import_existing_series_archive(
@@ -1696,7 +1790,9 @@ class LibraryImporter:
         skip ambiguous slots while retaining useful books elsewhere in a pack.
         """
 
-        scan = self.scan_torrent_content(content)
+        scan = self.scan_torrent_content(
+            content, release_title=str(job.get("title") or "")
+        )
         root = Path(scan["root"])
         items = list(scan["items"])
         skip_decisions = list(scan["skipped"])
