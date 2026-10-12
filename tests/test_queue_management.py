@@ -896,7 +896,10 @@ async def test_transient_download_attempts_advance_and_eventually_fail(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_provider_rejection_fails_once_without_transient_pause(tmp_path: Path):
+@pytest.mark.parametrize("failure", [ProviderRequestError, ProviderUnavailableError])
+async def test_provider_rejection_fails_once_without_transient_pause(
+    tmp_path: Path, failure
+):
     database = Database(tmp_path / "tankarr.sqlite3")
     database.initialize()
     seed_manga(database)
@@ -912,7 +915,7 @@ async def test_provider_rejection_fails_once_without_transient_pause(tmp_path: P
         name = "mangadex"
 
         async def download_pages(self, *_args, **_kwargs):
-            raise ProviderRequestError("provider rejected this chapter")
+            raise failure("GET http://nas.local/pages?apikey=fixture%2Dpassword failed")
 
     service = TankarrService(
         settings,
@@ -922,12 +925,26 @@ async def test_provider_rejection_fails_once_without_transient_pause(tmp_path: P
     )
     job = database.create_job("manga-1", "chapter-1", "en")
 
+    notifications = []
+
+    async def notify_failed(title, detail):
+        notifications.append(detail)
+
+    service.notifier.job_failed = notify_failed
     await service.process_download_job(job["id"])
 
     terminal = database.get_job(job["id"])
-    assert terminal["status"] == "failed"
-    assert terminal["message"].startswith("ProviderRequestError:")
-    assert terminal["next_retry_at"] == 0
+    assert "fixture" not in terminal["message"]
+    assert "password" not in terminal["message"]
+    assert "apikey=[redacted]" in terminal["message"]
+    if failure is ProviderRequestError:
+        assert terminal["status"] == "failed"
+        assert terminal["message"].startswith("ProviderRequestError:")
+        assert terminal["next_retry_at"] == 0
+        assert notifications == [terminal["message"]]
+    else:
+        assert terminal["status"] == "queued"
+        assert notifications == []
 
 
 def _write_library_file(root: Path, relative: str) -> Path:
